@@ -1,0 +1,983 @@
+## Code Cell
+!pip install pyspark
+!pip install dask[dataframe]
+
+## Code Cell
+!pip install "dask[complete]"
+
+## Code Cell
+from pyspark.sql import SparkSession
+
+spark = SparkSession.builder \
+    .appName("Yelp Restaurant Review") \
+    .getOrCreate()
+
+## Code Cell
+
+business_csv = 'yelp_academic_dataset_business.csv'
+
+business_df = spark.read.csv(business_csv, header=True, inferSchema=True)
+
+business_df = business_df.withColumnRenamed("stars", "overall_star")
+
+
+## Code Cell
+import os
+
+print(os.path.exists(business_csv))
+
+## Code Cell
+business_csv = 'yelp_academic_dataset_business.csv'
+
+
+if os.path.exists(business_csv):
+    try:
+        
+        business_df = spark.read.csv(business_csv, header=True, inferSchema=True)
+    except Exception as e:
+        print("Error reading the CSV file:", e)
+else:
+    print(f"The file {business_csv} does not exist. Please check the path.")
+
+## Code Cell
+business_df.show(5)
+
+## Code Cell
+business_df.show(10)
+
+## Code Cell
+#merged_df.write.csv('/content/drive/MyDrive/yelp_dataset_csv/merged_yelp_data.csv', header=True)
+
+## Code Cell
+
+business_df.describe().show()
+
+Merge CSVs
+
+## Code Cell
+
+df1 = spark.read.csv("yelp_academic_dataset_business.csv", header=True, inferSchema=True)
+df2 = spark.read.csv("yelp_academic_dataset_review.csv", header=True, inferSchema=True)
+
+print("Schema of first CSV:")
+df1.printSchema()
+print("\nSchema of second CSV:")
+df2.printSchema()
+
+
+for col_name in df1.columns:
+    if col_name in df2.columns and col_name not in ['business_id']:
+        df2 = df2.withColumnRenamed(col_name, col_name + "_2")
+
+merged_df = df1.join(df2, on=["business_id"], how="outer")
+
+merged_df = merged_df.dropna(subset=["review_id"])
+
+print("Available columns after merging:")
+print(merged_df.columns)
+
+final_columns = [
+    "business_id", "review_id", "name", "address", 
+    "stars", "stars_2", "text", "city", 
+    "state", "postal_code"
+]
+
+valid_columns = [col for col in final_columns if col in merged_df.columns]
+
+print("Final columns selected:")
+print(valid_columns)
+final_df = merged_df.select(*valid_columns)
+
+
+final_df.write.csv("merged_output.csv", header=True)
+
+## Code Cell
+import matplotlib.pyplot as plt
+
+review_counts = business_df.select("review_count").rdd.flatMap(lambda x: x).collect()
+
+
+plt.figure(figsize=(10, 6))
+plt.hist(review_counts, bins=50, color='skyblue', edgecolor='black')
+plt.xlabel('Review Count')
+plt.ylabel('Frequency')
+plt.title('Distribution of Review Counts')
+plt.grid(axis='y', alpha=0.75)
+plt.show()
+
+## Code Cell
+
+business_count_by_state = business_df.groupBy("state").count().orderBy("count", ascending=False)
+
+
+state_counts = business_count_by_state.toPandas()
+
+
+plt.figure(figsize=(12, 6))
+plt.bar(state_counts['state'], state_counts['count'], color='orange')
+plt.xlabel('State')
+plt.ylabel('Number of Businesses')
+plt.title('Number of Businesses by State')
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+
+## Code Cell
+# Filter businesses in Louisiana
+la_businesses = business_df.filter(business_df.state == "LA")
+
+business_count_la = la_businesses.groupBy("city", "state").count().orderBy("count", ascending=False)
+
+la_counts = business_count_la.toPandas()
+
+plt.figure(figsize=(12, 6))
+plt.bar(la_counts['city'], la_counts['count'], color='green')
+plt.xlabel('City in Louisiana')
+plt.ylabel('Number of Businesses')
+plt.title('Number of Businesses by City in Louisiana')
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+
+
+## Code Cell
+# Average rating based on whether the business is open or closed
+open_closed_rating = business_df.groupBy("is_open").agg({"overall_star": "avg", "business_id": "count"}).withColumnRenamed("count(business_id)", "business_count").toPandas()
+
+plt.figure(figsize=(8, 5))
+plt.bar(open_closed_rating['is_open'].astype(str), open_closed_rating['avg(overall_star)'], color=['lightblue', 'salmon'])
+plt.xlabel('Business Status (0=Closed, 1=Open)')
+plt.ylabel('Average Rating')
+plt.title('Average Rating of Open vs. Closed Businesses')
+plt.grid(axis='y', alpha=0.75)
+plt.show()
+
+## Code Cell
+# Calculate the average rating by state
+average_rating_by_state =business_df.groupBy("state").agg({"stars": "avg"}).withColumnRenamed("avg(stars)", "average_rating").orderBy("average_rating", ascending=False)
+
+top_states = average_rating_by_state.limit(5)
+top_states_pd = top_states.toPandas()
+top_states_list = top_states_pd['state'].tolist()
+
+
+## Code Cell
+from pyspark.sql.window import Window
+from pyspark.sql.functions import rank
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+window_spec = Window.partitionBy("state").orderBy(business_df.overall_star.desc())
+
+ranked_businesses_top_states = business_df.filter(business_df.state.isin(top_states_list)).withColumn("rank", rank().over(window_spec))
+
+top_businesses_final = ranked_businesses_top_states.filter(ranked_businesses_top_states.rank <= 5).select("state", "name", "overall_star")
+top_businesses_final_pd = top_businesses_final.toPandas()
+
+sns.set(style="whitegrid")
+
+palette = sns.color_palette("husl", len(top_states_list))
+
+plt.figure(figsize=(16, 8))
+
+
+for state in top_states_list:
+    state_data = top_businesses_final_pd[top_businesses_final_pd['state'] == state]
+    plt.bar(state_data['name'], state_data['overall_star'], label=state, alpha=0.7)
+
+plt.xlabel('Business Name')
+plt.ylabel('Overall Star Rating')
+plt.title('Top 5 Businesses in the Top 5 States')
+plt.xticks(rotation=45, ha='right')
+plt.legend(title='State')
+plt.grid(axis='y', alpha=0.75)
+plt.tight_layout()
+plt.show()
+
+
+## Code Cell
+import dask.dataframe as dd
+df = business_df.toPandas()
+df_dask = dd.from_pandas(df, npartitions=4)
+
+## Code Cell
+
+average_rating_by_city = df_dask.groupby('city')['overall_star'].mean().nlargest(5).compute()
+average_rating_by_city_pd = average_rating_by_city.reset_index()
+average_rating_by_city_pd.columns = ['city', 'average_rating']
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+sns.set(style="whitegrid")
+plt.figure(figsize=(10, 6))
+plt.bar(average_rating_by_city_pd['city'], average_rating_by_city_pd['average_rating'], color='skyblue')
+plt.xlabel('City')
+plt.ylabel('Average Rating')
+plt.title('Top 5 Cities with Highest Average Ratings')
+plt.xticks(rotation=45)
+plt.ylim(0, 5) 
+plt.grid(axis='y', alpha=0.75)
+plt.tight_layout()
+plt.show()
+
+## Code Cell
+!pip install datasets
+
+## Code Cell
+# import dask.dataframe as dd
+# import csv
+# # Assuming the data is in a CSV file
+# dask_df = dd.read_csv('/content/drive/MyDrive/yelp_dataset_csv/yelp_academic_dataset_review.csv', on_bad_lines='skip', lineterminator='\n', quoting=csv.QUOTE_NONE, low_memory=False)  # Adjust the path as needed
+
+## Code Cell
+import dask.dataframe as dd
+import csv
+
+dask_df = dd.read_csv(
+    'yelp_academic_dataset_review.csv', 
+    on_bad_lines='skip', 
+    lineterminator='\n', 
+    quoting=csv.QUOTE_NONE, 
+    low_memory=False
+)
+
+print(dask_df.head())
+
+
+## Code Cell
+cleaned_df = dask_df.compute()
+
+## Code Cell
+import dask.dataframe as dd
+import re
+import numpy as np
+import torch
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, accuracy_score
+from transformers import BertTokenizer, BertForSequenceClassification, Trainer, TrainingArguments
+
+## TF-IDF
+
+## Code Cell
+!pip install scikit-learn
+
+Logistic Regression Classifier
+
+## Code Cell
+import dask.dataframe as dd
+import pandas as pd
+import numpy as np
+import re
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, classification_report
+
+cleaned_df['stars'] = pd.to_numeric(cleaned_df['stars'], errors='coerce')
+
+# Define a function to clean the text
+def preprocess_text(text):
+    if isinstance(text, str):
+        text = text.lower() 
+        text = re.sub(r'[^a-zA-Z0-9\s]', '', text)  # Remove special characters
+        return text
+    return ''  # Return empty string for NaN values
+
+# Apply the preprocessing function
+cleaned_df['clean_text'] = cleaned_df['text'].apply(preprocess_text)
+
+cleaned_df = cleaned_df.dropna(subset=['stars'])
+
+# ratings to classes
+def map_stars_to_classes(stars):
+    if stars >= 4:
+        return 2  # Positive
+    elif stars == 3:
+        return 1  # Neutral
+    else:
+        return 0  # Negative
+
+# create labels
+cleaned_df['labels'] = cleaned_df['stars'].apply(map_stars_to_classes)
+
+
+cleaned_df = cleaned_df.dropna(subset=['labels'])
+
+
+train_df, temp_df = train_test_split(cleaned_df, test_size=0.3, stratify=cleaned_df['labels'], random_state=42)
+val_df, test_df = train_test_split(temp_df, test_size=0.5, stratify=temp_df['labels'], random_state=42)
+
+# Use TF-IDF to vectorize the text
+vectorizer = TfidfVectorizer(max_features=5000)
+X_train = vectorizer.fit_transform(train_df['clean_text'])
+X_val = vectorizer.transform(val_df['clean_text'])
+X_test = vectorizer.transform(test_df['clean_text'])
+
+y_train = train_df['labels']
+y_val = val_df['labels']
+y_test = test_df['labels']
+
+
+
+
+# Train Logistic Regression model
+clf = LogisticRegression(max_iter=1000, random_state=42)
+clf.fit(X_train, y_train)
+
+# Evaluation
+val_predictions = clf.predict(X_val)
+val_accuracy = accuracy_score(y_val, val_predictions)
+print(f'Validation Accuracy: {val_accuracy:.4f}')
+
+# Evaluation on test
+test_predictions = clf.predict(X_test)
+test_accuracy = accuracy_score(y_test, test_predictions)
+print(f'Test Accuracy: {test_accuracy:.4f}')
+
+# classification report
+report = classification_report(y_test, test_predictions, target_names=['Negative', 'Neutral', 'Positive'])
+print(report)
+
+
+# LR confusion matrix
+def plot_confusion_matrix(y_true, y_pred, model_name):
+    cm = confusion_matrix(y_true, y_pred)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Negative', 'Neutral', 'Positive'])
+    
+    plt.figure(figsize=(8, 6))
+    disp.plot(cmap=plt.cm.Blues, values_format='d')
+    plt.title(f'Confusion Matrix for {model_name}')
+    plt.show()
+
+
+plot_confusion_matrix(y_test, test_predictions, "Logistic Regression Classifier")
+
+SGD Classifier
+
+## Code Cell
+import dask.dataframe as dd
+import pandas as pd
+import numpy as np
+import re
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, classification_report
+
+
+cleaned_df['stars'] = pd.to_numeric(cleaned_df['stars'], errors='coerce')
+
+# Define a function to clean the text
+def preprocess_text(text):
+    if isinstance(text, str):
+        text = text.lower()  # Lowercase
+        text = re.sub(r'[^a-zA-Z0-9\s]', '', text) 
+        return text
+    return ''
+
+
+cleaned_df['clean_text'] = cleaned_df['text'].apply(preprocess_text)
+
+
+cleaned_df = cleaned_df.dropna(subset=['stars'])
+
+# Map star ratings to classes
+def map_stars_to_classes(stars):
+    if stars >= 4:
+        return 2  # Positive
+    elif stars == 3:
+        return 1  # Neutral
+    else:
+        return 0  # Negative
+
+
+cleaned_df['labels'] = cleaned_df['stars'].apply(map_stars_to_classes)
+
+
+cleaned_df = cleaned_df.dropna(subset=['labels'])
+
+# Split data into training, validation and test sets
+train_df, temp_df = train_test_split(cleaned_df, test_size=0.3, stratify=cleaned_df['labels'], random_state=42)
+val_df, test_df = train_test_split(temp_df, test_size=0.5, stratify=temp_df['labels'], random_state=42)
+
+# Using TF-IDF
+vectorizer = TfidfVectorizer(max_features=5000)  # Limit to top 5000 words by frequency
+X_train = vectorizer.fit_transform(train_df['clean_text'])
+X_val = vectorizer.transform(val_df['clean_text'])
+X_test = vectorizer.transform(test_df['clean_text'])
+
+y_train = train_df['labels']
+y_val = val_df['labels']
+y_test = test_df['labels']
+
+
+
+
+# Train SGDClassifier model
+sgd_clf = SGDClassifier(max_iter=1000, random_state=42)
+sgd_clf.fit(X_train, y_train)
+
+# Evaluation on validation set
+val_predictions = sgd_clf.predict(X_val)
+val_accuracy = accuracy_score(y_val, val_predictions)
+print(f'SGDClassifier Validation Accuracy: {val_accuracy:.4f}')
+
+# Evaluation on test set
+test_predictions = sgd_clf.predict(X_test)
+test_accuracy = accuracy_score(y_test, test_predictions)
+print(f'SGDClassifier Test Accuracy: {test_accuracy:.4f}')
+
+# classification
+report = classification_report(y_test, test_predictions, target_names=['Negative', 'Neutral', 'Positive'])
+print(report)
+
+# SGD confusion matrix
+def plot_confusion_matrix(y_true, y_pred, model_name):
+    cm = confusion_matrix(y_true, y_pred)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Negative', 'Neutral', 'Positive'])
+    
+    plt.figure(figsize=(8, 6))
+    disp.plot(cmap=plt.cm.Blues, values_format='d')
+    plt.title(f'Confusion Matrix for {model_name}')
+    plt.show()
+
+
+plot_confusion_matrix(y_test, test_predictions, "SGD Classifier")
+
+Gradient Boosting Classifier
+
+## Code Cell
+import dask.dataframe as dd
+import pandas as pd
+import numpy as np
+import re
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, ConfusionMatrixDisplay
+import matplotlib.pyplot as plt
+
+
+cleaned_df['stars'] = pd.to_numeric(cleaned_df['stars'], errors='coerce')
+
+
+def preprocess_text(text):
+    if isinstance(text, str):
+        text = text.lower()  
+        text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
+        return text
+    return '' 
+
+
+cleaned_df['clean_text'] = cleaned_df['text'].apply(preprocess_text)
+
+
+cleaned_df = cleaned_df.dropna(subset=['stars'])
+
+
+def map_stars_to_classes(stars):
+    if stars >= 4:
+        return 2  # Positive
+    elif stars == 3:
+        return 1  # Neutral
+    else:
+        return 0  # Negative
+
+
+cleaned_df['labels'] = cleaned_df['stars'].apply(map_stars_to_classes)
+
+
+cleaned_df = cleaned_df.dropna(subset=['labels'])
+
+
+train_df, temp_df = train_test_split(cleaned_df, test_size=0.3, stratify=cleaned_df['labels'], random_state=42)
+val_df, test_df = train_test_split(temp_df, test_size=0.5, stratify=temp_df['labels'], random_state=42)
+
+# Using TF-IDF
+vectorizer = TfidfVectorizer(max_features=5000)  # Limit to top 5000 words by frequency
+X_train = vectorizer.fit_transform(train_df['clean_text'])
+X_val = vectorizer.transform(val_df['clean_text'])
+X_test = vectorizer.transform(test_df['clean_text'])
+
+y_train = train_df['labels']
+y_val = val_df['labels']
+y_test = test_df['labels']
+
+# Train Gradient Boosting Classifier model
+gb_clf = GradientBoostingClassifier(n_estimators=100, random_state=42)
+gb_clf.fit(X_train, y_train)
+
+# Evaluation on validation set
+val_predictions = gb_clf.predict(X_val)
+val_accuracy = accuracy_score(y_val, val_predictions)
+print(f'Gradient Boosting Classifier Validation Accuracy: {val_accuracy:.4f}')
+
+# Evaluation on test set
+test_predictions = gb_clf.predict(X_test)
+test_accuracy = accuracy_score(y_test, test_predictions)
+print(f'Gradient Boosting Classifier Test Accuracy: {test_accuracy:.4f}')
+
+#classification report
+report = classification_report(y_test, test_predictions, target_names=['Negative', 'Neutral', 'Positive'])
+print(report)
+
+# Gradient Boosting confusion matrix
+def plot_confusion_matrix(y_true, y_pred, model_name):
+    cm = confusion_matrix(y_true, y_pred)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Negative', 'Neutral', 'Positive'])
+    
+    plt.figure(figsize=(8, 6))
+    disp.plot(cmap=plt.cm.Blues, values_format='d')
+    plt.title(f'Confusion Matrix for {model_name}')
+    plt.show()
+
+plot_confusion_matrix(y_test, test_predictions, "Gradient Boosting Classifier")
+
+
+Random Forest Classifier
+
+## Code Cell
+import dask.dataframe as dd
+import pandas as pd
+import numpy as np
+import re
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, ConfusionMatrixDisplay
+import matplotlib.pyplot as plt
+
+
+cleaned_df['stars'] = pd.to_numeric(cleaned_df['stars'], errors='coerce')
+
+
+def preprocess_text(text):
+    if isinstance(text, str):
+        text = text.lower() 
+        text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
+        return text
+    return ''
+
+
+cleaned_df['clean_text'] = cleaned_df['text'].apply(preprocess_text)
+
+
+cleaned_df = cleaned_df.dropna(subset=['stars'])
+
+# Map star ratings to classes
+def map_stars_to_classes(stars):
+    if stars >= 4:
+        return 2  # Positive
+    elif stars == 3:
+        return 1  # Neutral
+    else:
+        return 0  # Negative
+
+
+cleaned_df['labels'] = cleaned_df['stars'].apply(map_stars_to_classes)
+
+
+cleaned_df = cleaned_df.dropna(subset=['labels'])
+
+
+train_df, temp_df = train_test_split(cleaned_df, test_size=0.3, stratify=cleaned_df['labels'], random_state=42)
+val_df, test_df = train_test_split(temp_df, test_size=0.5, stratify=temp_df['labels'], random_state=42)
+
+# Using TF-IDF
+vectorizer = TfidfVectorizer(max_features=5000)  # Limit to top 5000 words by frequency
+X_train = vectorizer.fit_transform(train_df['clean_text'])
+X_val = vectorizer.transform(val_df['clean_text'])
+X_test = vectorizer.transform(test_df['clean_text'])
+
+y_train = train_df['labels']
+y_val = val_df['labels']
+y_test = test_df['labels']
+
+# Train Random Forest Classifier model
+rf_clf = RandomForestClassifier(n_estimators=100, random_state=42)
+rf_clf.fit(X_train, y_train)
+
+# Evaluation on validation set
+val_predictions = rf_clf.predict(X_val)
+val_accuracy = accuracy_score(y_val, val_predictions)
+print(f'Random Forest Classifier Validation Accuracy: {val_accuracy:.4f}')
+
+# Evaluation on test set
+test_predictions = rf_clf.predict(X_test)
+test_accuracy = accuracy_score(y_test, test_predictions)
+print(f'Random Forest Classifier Test Accuracy: {test_accuracy:.4f}')
+
+# classification report
+report = classification_report(y_test, test_predictions, target_names=['Negative', 'Neutral', 'Positive'])
+print(report)
+
+# Random Forest confusion matrix
+def plot_confusion_matrix(y_true, y_pred, model_name):
+    cm = confusion_matrix(y_true, y_pred)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Negative', 'Neutral', 'Positive'])
+    
+    plt.figure(figsize=(8, 6))
+    disp.plot(cmap=plt.cm.Blues, values_format='d')
+    plt.title(f'Confusion Matrix for {model_name}')
+    plt.show()
+
+plot_confusion_matrix(y_test, test_predictions, "Random Forest Classifier")
+
+
+##Models comparison Visualisation
+
+## Code Cell
+#visualization without big data framework
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+# Data Preparation
+models = [
+    "Model 1 (Unnamed)",
+    "SGDClassifier",
+    "Random Forest Classifier"
+]
+
+validation_accuracies = [0.7909, 0.7817, 0.7886]
+test_accuracies = [0.7906, 0.7804, 0.7879]
+
+# Bar positions
+x = np.arange(len(models))
+
+
+fig, ax = plt.subplots(figsize=(10, 6))
+
+
+colors = ['#007BFF', '#FFD700']
+
+# Plotting bars
+bar_width = 0.35
+bars1 = ax.bar(x - bar_width/2, validation_accuracies, bar_width, label='Validation Accuracy', color=pastel_colors[0])
+bars2 = ax.bar(x + bar_width/2, test_accuracies, bar_width, label='Test Accuracy', color=pastel_colors[1])
+
+
+ax.set_xlabel('Models')
+ax.set_ylabel('Accuracy')
+ax.set_title('Model Accuracy Comparison')
+ax.set_xticks(x)
+ax.set_xticklabels(models)
+ax.legend()
+
+
+def add_value_labels(bars):
+    for bar in bars:
+        yval = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width() / 2, yval + 0.005, round(yval, 4), ha='center', va='bottom')
+
+add_value_labels(bars1)
+add_value_labels(bars2)
+plt.tight_layout()
+plt.show()
+
+
+## Code Cell
+#visualization with big data framework
+
+from pyspark.sql import SparkSession
+import matplotlib.pyplot as plt
+import pandas as pd
+
+
+spark = SparkSession.builder \
+    .appName("Model Accuracy Visualization") \
+    .getOrCreate()
+
+
+data = [
+    ("Logistic Regression", 0.7909, 0.7906),
+    ("SGDClassifier", 0.7817, 0.7804),
+    ("Random Forest Classifier", 0.7886, 0.7879)
+]
+
+
+columns = ["Model", "Validation Accuracy", "Test Accuracy"]
+df = spark.createDataFrame(data, columns)
+
+df.show()
+
+pdf = df.toPandas()
+
+models = pdf["Model"]
+validation_accuracies = pdf["Validation Accuracy"]
+test_accuracies = pdf["Test Accuracy"]
+
+x = range(len(models))
+
+fig, ax = plt.subplots(figsize=(10, 6))
+
+pastel_colors = ['#A4C8E1', '#FDFD96'] 
+
+
+bar_width = 0.35
+bars1 = ax.bar([i - bar_width / 2 for i in x], validation_accuracies, bar_width, label='Validation Accuracy', color=pastel_colors[0])
+bars2 = ax.bar([i + bar_width / 2 for i in x], test_accuracies, bar_width, label='Test Accuracy', color=pastel_colors[1])
+
+ax.set_xlabel('Models')
+ax.set_ylabel('Accuracy')
+ax.set_title('Model Accuracy Comparison')
+ax.set_xticks(x)
+ax.set_xticklabels(models)
+
+def add_value_labels(bars):
+    for bar in bars:
+        yval = bar.get_height()
+        ax.text(bar.get_x() + bar.get_width() / 2, yval + 0.005, round(yval, 4), ha='center', va='bottom')
+
+add_value_labels(bars1)
+add_value_labels(bars2)
+plt.tight_layout()
+plt.show()
+
+
+spark.stop()
+
+
+## Word Cloud
+
+## Code Cell
+!pip install wordcloud matplotlib pandas
+
+## Code Cell
+import dask.dataframe as dd
+import pandas as pd
+import numpy as np
+import re
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+
+dask_df = dd.read_csv(
+    'yelp_academic_dataset_review.csv', 
+    on_bad_lines='skip', 
+    lineterminator='\n', 
+    quoting=csv.QUOTE_NONE, 
+    low_memory=False
+)
+cleaned_df = dask_df.compute()
+
+
+def preprocess_text(text):
+    if isinstance(text, str):
+        text = text.lower()
+        text = re.sub(r'[^a-zA-Z0-9\s]', '', text)  
+        return text
+    return ''  
+
+
+cleaned_df['clean_text'] = cleaned_df['text'].apply(preprocess_text)
+
+
+all_text = ' '.join(cleaned_df['clean_text'].tolist())
+
+# Generate the word cloud
+wordcloud = WordCloud(width=800, height=400, background_color='white', max_words=200).generate(all_text)
+
+# showing the word cloud
+plt.figure(figsize=(10, 5))
+plt.imshow(wordcloud, interpolation='bilinear')
+plt.axis('off') 
+plt.title('Word Cloud of Text Frequency')
+plt.show()
+
+
+## Code Cell
+#paths to the CSV files
+merged_csv = 'merged_output.csv'
+
+# Load the CSV
+merged_df = spark.read.csv(merged_csv, header=True, inferSchema=True)
+
+## Code Cell
+import os
+
+print(os.path.exists(merged_csv))
+merged_csv = 'merged_output.csv'
+
+
+if os.path.exists(merged_csv):
+    try:
+        
+        merged_df = spark.read.csv(merged_csv, header=True, inferSchema=True)
+    except Exception as e:
+        print("Error reading the CSV file:", e)
+else:
+    print(f"The file {merged_csv} does not exist. Please check the path.")
+
+## Code Cell
+merged_df.show(10)
+
+## Code Cell
+!pip install cassandra-driver pandas
+
+
+## Code Cell
+#cassandra -f #running locally on terminal
+
+
+##Cassandra-driver for query
+
+## Code Cell
+# Load CSV 
+data = pd.read_csv('merged_output.csv')
+
+
+## Code Cell
+import os
+
+# current directory
+print("Current Working Directory:", os.getcwd())
+
+## Code Cell
+pip install cassandra-driver
+
+
+## Code Cell
+from cassandra.cluster import Cluster
+
+# Connect to the Cassandra cluster running in Docker
+cluster = Cluster(['0.0.0.0'], port=9042)
+session = cluster.connect('business_data')
+
+
+## Code Cell
+# Simple Query - Reading Data from 'reviews' table where stars_y = 5.0 and state = 'LA'
+print("Reading data simply...")
+rows = session.execute("SELECT * FROM reviews WHERE stars_y = 5.0 AND state = 'LA' ALLOW FILTERING;")
+for review_row in rows:
+    print(f"{review_row.name} | {review_row.stars_y} stars | {review_row.state} | {review_row.city}")
+    print(f"Review: {review_row.text}")
+
+## Code Cell
+# Prepared Statement Query - Optimized way to fetch specific data
+print("Reading data using prepared statements...")
+prepared_statement = session.prepare("SELECT * FROM reviews WHERE business_id=?")
+business_ids_to_lookup = ['bEeZg3fNNRCqg1v5DiSvXA']
+
+for business_id in business_ids_to_lookup:
+    review = session.execute(prepared_statement, [business_id]).one()
+    if review:
+        print(f"Business Name: {review.name}, City: {review.city}, Stars: {review.stars_y}")
+    else:
+        print(f"No review found for business_id: {business_id}")
+
+## Code Cell
+# Inserting Data into the 'reviews' table
+print("Inserting new review data...")
+session.execute("""
+    INSERT INTO reviews (
+        business_id, name, address, city, state, postal_code, 
+        latitude, longitude, stars_x, review_count, is_open, 
+        attributes, categories, hours, review_id, user_id, 
+        stars_y, useful, funny, cool, text, date
+    ) VALUES (
+        'new_business_id', 
+        'New Business', 
+        '123 Main St', 
+        'Los Angeles', 
+        'CA', 
+        '90001', 
+        34.05, 
+        -118.25, 
+        4.5, 
+        10, 
+        1, 
+        'Some attributes', 
+        'Some categories', 
+        'Some hours', 
+        'new_review_id',  -- Make sure this is unique for each review
+        'user_id_123',    -- Replace with a valid user_id
+        5.0, 
+        1, 
+        0, 
+        0, 
+        'Great place to visit!', 
+        '2024-10-11 12:00:00'  -- Use the correct format for timestamps
+    );
+""")
+
+# Example of an asynchronous insert with review_id
+future = session.execute_async("""
+    INSERT INTO reviews (
+        business_id, name, address, city, state, postal_code, 
+        latitude, longitude, stars_x, review_count, is_open, 
+        attributes, categories, hours, review_id, user_id, 
+        stars_y, useful, funny, cool, text, date
+    ) VALUES (
+        'async_business_id', 
+        'Async Business', 
+        '456 Sunset Blvd', 
+        'Los Angeles', 
+        'CA', 
+        '90001', 
+        34.06, 
+        -118.26, 
+        3.5, 
+        5, 
+        1, 
+        'Some attributes', 
+        'Some categories', 
+        'Some hours', 
+        'async_review_id',  -- Make sure this is unique for each review
+        'user_id_456',      -- Replace with a valid user_id
+        4.0, 
+        0, 
+        0, 
+        1, 
+        'Nice atmosphere!', 
+        '2024-10-11 12:30:00'  -- Use the correct format for timestamps
+    );
+""")
+future.result() 
+print("Asynchronous data insert completed.")
+
+
+## Code Cell
+prepared_statement = session.prepare("SELECT * FROM reviews WHERE business_id=?")
+business_ids_to_lookup = ['new_business_id']
+
+for business_id in business_ids_to_lookup:
+    review = session.execute(prepared_statement, [business_id]).one()
+    if review:
+        print(f"Business Name: {review.name}, City: {review.city}, Stars: {review.stars_y}")
+    else:
+        print(f"No review found for business_id: {business_id}")
+
+##Lines of code here
+
+## Code Cell
+import json
+
+def count_code_lines_in_ipynb(file_path):
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            notebook_data = json.load(f)
+    
+        line_count = 0
+    
+        for cell in notebook_data['cells']:
+            if cell['cell_type'] == 'code':
+                line_count += len(cell['source'])
+        
+        return line_count
+    
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return None
+
+
+if __name__ == "__main__":
+    ipynb_file = 'project_BD_final.ipynb'
+    total_lines = count_code_lines_in_ipynb(ipynb_file)
+    if total_lines is not None:
+        print(f"Total lines of code in {ipynb_file}: {total_lines}")
+
+## Code Cell
+
+
